@@ -7,11 +7,14 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    cursor::PageCursor,
+    error::AppError,
     graphql,
     traggo_client::TraggoClient,
     validation::{
-        validate_non_negative, validate_optional_required_string, validate_optional_rfc3339,
-        validate_page_size, validate_required_string, validate_rfc3339, validate_time_order,
+        validate_optional_required_string, validate_optional_rfc3339, validate_page_size,
+        validate_positive_id, validate_required_string, validate_rfc3339, validate_time_order,
+        validate_time_order_inclusive,
     },
 };
 
@@ -31,9 +34,10 @@ pub struct RangeInput {
 pub struct ListTimeSpansInput {
     pub from_inclusive: Option<String>,
     pub to_inclusive: Option<String>,
+    /// Maximum number of time spans to return (1-200, defaults to 50).
     pub page_size: Option<i64>,
-    pub offset: Option<i64>,
-    pub start_id: Option<i64>,
+    /// Opaque pagination token from a previous response's `next_cursor`.
+    pub cursor: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -50,9 +54,10 @@ pub struct UpdateTimeSpanInput {
     pub id: i64,
     pub start: String,
     pub end: Option<String>,
+    /// Replaces the time span's tags entirely; omit only to clear all tags.
     pub tags: Option<Vec<TagInput>>,
     pub old_start: Option<String>,
-    #[serde(default)]
+    /// Replaces the time span's note entirely; pass the existing note to keep it.
     pub note: String,
 }
 
@@ -102,7 +107,8 @@ pub struct StatsInput {
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct ListTimeSpansOutput {
     pub time_spans: Vec<TimeSpanOutput>,
-    pub cursor: CursorOutput,
+    /// Opaque token for the next page, present only when more results exist.
+    pub next_cursor: Option<String>,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -123,14 +129,6 @@ pub struct TimeSpanOutput {
     pub old_start: Option<String>,
     pub note: String,
     pub tags: Vec<TagOutput>,
-}
-
-#[derive(Debug, Serialize, JsonSchema)]
-pub struct CursorOutput {
-    pub has_more: bool,
-    pub offset: i64,
-    pub start_id: i64,
-    pub page_size: i64,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -200,7 +198,7 @@ impl TraggoTools {
 
     #[tool(
         name = "list_time_spans",
-        description = "List Traggo time spans with optional RFC3339 range filters and bounded pagination."
+        description = "List Traggo time spans with optional RFC3339 range filters and bounded pagination. Pass `next_cursor` from a prior response back as `cursor` to page forward."
     )]
     pub async fn list_time_spans(
         &self,
@@ -211,26 +209,34 @@ impl TraggoTools {
         validate_optional_rfc3339("to_inclusive", input.to_inclusive.as_ref())
             .map_err(tool_error)?;
         if let (Some(from), Some(to)) = (&input.from_inclusive, &input.to_inclusive) {
-            validate_time_order("from_inclusive", from, "to_inclusive", to).map_err(tool_error)?;
+            validate_time_order_inclusive("from_inclusive", from, "to_inclusive", to)
+                .map_err(tool_error)?;
         }
-        validate_non_negative("offset", input.offset).map_err(tool_error)?;
-        validate_non_negative("start_id", input.start_id).map_err(tool_error)?;
-        let page_size = validate_page_size(input.page_size).map_err(tool_error)?;
+
+        let previous = input
+            .cursor
+            .as_deref()
+            .map(PageCursor::decode)
+            .transpose()
+            .map_err(tool_error)?;
+        let page_size =
+            validate_page_size(input.page_size.or(previous.as_ref().map(|c| c.page_size)))
+                .map_err(tool_error)?;
 
         let variables = graphql::time_spans::Variables {
             from_inclusive: input.from_inclusive,
             to_inclusive: input.to_inclusive,
             cursor: Some(graphql::time_spans::InputCursor {
-                offset: input.offset,
-                start_id: input.start_id,
+                offset: previous.as_ref().map(|c| c.offset),
+                start_id: previous.as_ref().map(|c| c.start_id),
                 page_size: Some(page_size),
             }),
         };
         self.client
             .list_time_spans(variables)
             .await
-            .map(list_time_spans_output)
             .map_err(tool_error)
+            .and_then(list_time_spans_output)
     }
 
     #[tool(
@@ -279,7 +285,7 @@ impl TraggoTools {
 
     #[tool(
         name = "update_time_span",
-        description = "Update an existing Traggo time span by id."
+        description = "Update an existing Traggo time span by id. This replaces the whole record: the provided note and tags overwrite the existing ones, so resend current values you want to keep."
     )]
     pub async fn update_time_span(
         &self,
@@ -526,30 +532,32 @@ impl TraggoTools {
     }
 }
 
-fn validate_positive_id(name: &str, value: i64) -> Result<(), crate::error::AppError> {
-    if value <= 0 {
-        return Err(crate::error::AppError::Validation(format!(
-            "{name} must be positive"
-        )));
-    }
-    Ok(())
-}
-
-fn list_time_spans_output(data: graphql::time_spans::ResponseData) -> Json<ListTimeSpansOutput> {
-    Json(ListTimeSpansOutput {
+fn list_time_spans_output(
+    data: graphql::time_spans::ResponseData,
+) -> Result<Json<ListTimeSpansOutput>, String> {
+    let cursor = data.time_spans.cursor;
+    let next_cursor = if cursor.has_more {
+        Some(
+            PageCursor {
+                offset: cursor.offset,
+                start_id: cursor.start_id,
+                page_size: cursor.page_size,
+            }
+            .encode()
+            .map_err(tool_error)?,
+        )
+    } else {
+        None
+    };
+    Ok(Json(ListTimeSpansOutput {
         time_spans: data
             .time_spans
             .time_spans
             .into_iter()
             .map(time_spans_time_span_output)
             .collect(),
-        cursor: CursorOutput {
-            has_more: data.time_spans.cursor.has_more,
-            offset: data.time_spans.cursor.offset,
-            start_id: data.time_spans.cursor.start_id,
-            page_size: data.time_spans.cursor.page_size,
-        },
-    })
+        next_cursor,
+    }))
 }
 
 fn list_timers_output(data: graphql::timers::ResponseData) -> Json<ListTimersOutput> {
@@ -563,189 +571,88 @@ fn list_timers_output(data: graphql::timers::ResponseData) -> Json<ListTimersOut
     })
 }
 
-fn time_spans_time_span_output(
-    time_span: graphql::time_spans::TimeSpansTimeSpansTimeSpans,
-) -> TimeSpanOutput {
-    TimeSpanOutput {
-        id: time_span.id,
-        start: time_span.start,
-        end: time_span.end,
-        old_start: time_span.old_start,
-        note: time_span.note,
-        tags: time_span
-            .tags
-            .unwrap_or_default()
-            .into_iter()
-            .map(time_spans_tag_output)
-            .collect(),
-    }
+/// Generates a `TimeSpanOutput` mapper and its tag mapper for one generated query type.
+macro_rules! time_span_mapper {
+    ($span_fn:ident, $span:path, $tag_fn:ident, $tag:path) => {
+        fn $tag_fn(tag: $tag) -> TagOutput {
+            TagOutput {
+                key: tag.key,
+                value: tag.value,
+            }
+        }
+
+        fn $span_fn(time_span: $span) -> TimeSpanOutput {
+            TimeSpanOutput {
+                id: time_span.id,
+                start: time_span.start,
+                end: time_span.end,
+                old_start: time_span.old_start,
+                note: time_span.note,
+                tags: time_span
+                    .tags
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map($tag_fn)
+                    .collect(),
+            }
+        }
+    };
 }
 
-fn timers_time_span_output(time_span: graphql::timers::TimersTimers) -> TimeSpanOutput {
-    TimeSpanOutput {
-        id: time_span.id,
-        start: time_span.start,
-        end: time_span.end,
-        old_start: time_span.old_start,
-        note: time_span.note,
-        tags: time_span
-            .tags
-            .unwrap_or_default()
-            .into_iter()
-            .map(timers_tag_output)
-            .collect(),
-    }
+time_span_mapper!(
+    time_spans_time_span_output,
+    graphql::time_spans::TimeSpansTimeSpansTimeSpans,
+    time_spans_tag_output,
+    graphql::time_spans::TimeSpansTimeSpansTimeSpansTags
+);
+time_span_mapper!(
+    timers_time_span_output,
+    graphql::timers::TimersTimers,
+    timers_tag_output,
+    graphql::timers::TimersTimersTags
+);
+time_span_mapper!(
+    create_time_span_output,
+    graphql::create_time_span::CreateTimeSpanCreateTimeSpan,
+    create_time_span_tag_output,
+    graphql::create_time_span::CreateTimeSpanCreateTimeSpanTags
+);
+time_span_mapper!(
+    update_time_span_output,
+    graphql::update_time_span::UpdateTimeSpanUpdateTimeSpan,
+    update_time_span_tag_output,
+    graphql::update_time_span::UpdateTimeSpanUpdateTimeSpanTags
+);
+time_span_mapper!(
+    stop_timer_output,
+    graphql::stop_timer::StopTimerStopTimeSpan,
+    stop_timer_tag_output,
+    graphql::stop_timer::StopTimerStopTimeSpanTags
+);
+time_span_mapper!(
+    remove_time_span_output,
+    graphql::remove_time_span::RemoveTimeSpanRemoveTimeSpan,
+    remove_time_span_tag_output,
+    graphql::remove_time_span::RemoveTimeSpanRemoveTimeSpanTags
+);
+
+/// Generates a `TagDefinitionOutput` mapper for one generated tag-definition type.
+macro_rules! tag_definition_mapper {
+    ($fn_name:ident, $ty:path) => {
+        fn $fn_name(tag: $ty) -> TagDefinitionOutput {
+            TagDefinitionOutput {
+                key: tag.key,
+                color: tag.color,
+                usages: tag.usages,
+            }
+        }
+    };
 }
 
-fn create_time_span_output(
-    time_span: graphql::create_time_span::CreateTimeSpanCreateTimeSpan,
-) -> TimeSpanOutput {
-    TimeSpanOutput {
-        id: time_span.id,
-        start: time_span.start,
-        end: time_span.end,
-        old_start: time_span.old_start,
-        note: time_span.note,
-        tags: time_span
-            .tags
-            .unwrap_or_default()
-            .into_iter()
-            .map(create_time_span_tag_output)
-            .collect(),
-    }
-}
-
-fn update_time_span_output(
-    time_span: graphql::update_time_span::UpdateTimeSpanUpdateTimeSpan,
-) -> TimeSpanOutput {
-    TimeSpanOutput {
-        id: time_span.id,
-        start: time_span.start,
-        end: time_span.end,
-        old_start: time_span.old_start,
-        note: time_span.note,
-        tags: time_span
-            .tags
-            .unwrap_or_default()
-            .into_iter()
-            .map(update_time_span_tag_output)
-            .collect(),
-    }
-}
-
-fn stop_timer_output(time_span: graphql::stop_timer::StopTimerStopTimeSpan) -> TimeSpanOutput {
-    TimeSpanOutput {
-        id: time_span.id,
-        start: time_span.start,
-        end: time_span.end,
-        old_start: time_span.old_start,
-        note: time_span.note,
-        tags: time_span
-            .tags
-            .unwrap_or_default()
-            .into_iter()
-            .map(stop_timer_tag_output)
-            .collect(),
-    }
-}
-
-fn remove_time_span_output(
-    time_span: graphql::remove_time_span::RemoveTimeSpanRemoveTimeSpan,
-) -> TimeSpanOutput {
-    TimeSpanOutput {
-        id: time_span.id,
-        start: time_span.start,
-        end: time_span.end,
-        old_start: time_span.old_start,
-        note: time_span.note,
-        tags: time_span
-            .tags
-            .unwrap_or_default()
-            .into_iter()
-            .map(remove_time_span_tag_output)
-            .collect(),
-    }
-}
-
-fn time_spans_tag_output(tag: graphql::time_spans::TimeSpansTimeSpansTimeSpansTags) -> TagOutput {
-    TagOutput {
-        key: tag.key,
-        value: tag.value,
-    }
-}
-
-fn timers_tag_output(tag: graphql::timers::TimersTimersTags) -> TagOutput {
-    TagOutput {
-        key: tag.key,
-        value: tag.value,
-    }
-}
-
-fn create_time_span_tag_output(
-    tag: graphql::create_time_span::CreateTimeSpanCreateTimeSpanTags,
-) -> TagOutput {
-    TagOutput {
-        key: tag.key,
-        value: tag.value,
-    }
-}
-
-fn update_time_span_tag_output(
-    tag: graphql::update_time_span::UpdateTimeSpanUpdateTimeSpanTags,
-) -> TagOutput {
-    TagOutput {
-        key: tag.key,
-        value: tag.value,
-    }
-}
-
-fn stop_timer_tag_output(tag: graphql::stop_timer::StopTimerStopTimeSpanTags) -> TagOutput {
-    TagOutput {
-        key: tag.key,
-        value: tag.value,
-    }
-}
-
-fn remove_time_span_tag_output(
-    tag: graphql::remove_time_span::RemoveTimeSpanRemoveTimeSpanTags,
-) -> TagOutput {
-    TagOutput {
-        key: tag.key,
-        value: tag.value,
-    }
-}
-
-fn tags_tag_output(tag: graphql::tags::TagsTags) -> TagDefinitionOutput {
-    TagDefinitionOutput {
-        key: tag.key,
-        color: tag.color,
-        usages: tag.usages,
-    }
-}
-
-fn create_tag_output(tag: graphql::create_tag::CreateTagCreateTag) -> TagDefinitionOutput {
-    TagDefinitionOutput {
-        key: tag.key,
-        color: tag.color,
-        usages: tag.usages,
-    }
-}
-
-fn update_tag_output(tag: graphql::update_tag::UpdateTagUpdateTag) -> TagDefinitionOutput {
-    TagDefinitionOutput {
-        key: tag.key,
-        color: tag.color,
-        usages: tag.usages,
-    }
-}
-
-fn remove_tag_output(tag: graphql::remove_tag::RemoveTagRemoveTag) -> TagDefinitionOutput {
-    TagDefinitionOutput {
-        key: tag.key,
-        color: tag.color,
-        usages: tag.usages,
-    }
-}
+tag_definition_mapper!(tags_tag_output, graphql::tags::TagsTags);
+tag_definition_mapper!(create_tag_output, graphql::create_tag::CreateTagCreateTag);
+tag_definition_mapper!(update_tag_output, graphql::update_tag::UpdateTagUpdateTag);
+tag_definition_mapper!(remove_tag_output, graphql::remove_tag::RemoveTagRemoveTag);
 
 fn stats_output(data: graphql::stats::ResponseData) -> Json<StatsOutput> {
     Json(StatsOutput {
@@ -779,7 +686,7 @@ fn stats_entry_output(entry: graphql::stats::StatsStatsEntries) -> StatsEntryOut
     }
 }
 
-fn validate_tags(tags: Option<&[TagInput]>) -> Result<(), crate::error::AppError> {
+fn validate_tags(tags: Option<&[TagInput]>) -> Result<(), AppError> {
     if let Some(tags) = tags {
         for (index, tag) in tags.iter().enumerate() {
             validate_required_string(&format!("tags[{index}].key"), &tag.key)?;

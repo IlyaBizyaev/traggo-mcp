@@ -1,5 +1,6 @@
 #![warn(clippy::pedantic)]
 mod config;
+mod cursor;
 mod error;
 mod graphql;
 mod tools;

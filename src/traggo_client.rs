@@ -29,6 +29,11 @@ impl TraggoClient {
         Q::Variables: Serialize,
         Q::ResponseData: DeserializeOwned,
     {
+        // `type_name` yields the query struct path (e.g. `..::graphql::TimeSpans`);
+        // it never contains request data or the auth token.
+        let operation = std::any::type_name::<Q>();
+        tracing::debug!(operation, url = %self.config.traggo_url, "sending Traggo request");
+
         let request_body = Q::build_query(variables);
         let authorization = format!("traggo {}", self.config.traggo_token);
         let response = self
@@ -41,6 +46,7 @@ impl TraggoClient {
             .map_err(|err| AppError::Http(err.to_string()).redact(&self.config.traggo_token))?;
 
         let status = response.status();
+        tracing::debug!(operation, %status, "received Traggo response");
         let body = response
             .text()
             .await

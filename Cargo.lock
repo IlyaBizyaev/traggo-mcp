@@ -1647,6 +1647,7 @@ name = "traggo-mcp"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64",
  "chrono",
  "graphql_client",
  "reqwest",

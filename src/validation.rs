@@ -53,6 +53,30 @@ pub fn validate_time_order(
     Ok(())
 }
 
+/// Validates ordering for inclusive bounds, where `start == end` is allowed.
+pub fn validate_time_order_inclusive(
+    start_name: &str,
+    start: &str,
+    end_name: &str,
+    end: &str,
+) -> Result<(), AppError> {
+    let start = validate_rfc3339(start_name, start)?;
+    let end = validate_rfc3339(end_name, end)?;
+    if start > end {
+        return Err(AppError::Validation(format!(
+            "{start_name} must not be after {end_name}"
+        )));
+    }
+    Ok(())
+}
+
+pub fn validate_positive_id(name: &str, value: i64) -> Result<(), AppError> {
+    if value <= 0 {
+        return Err(AppError::Validation(format!("{name} must be positive")));
+    }
+    Ok(())
+}
+
 pub fn validate_page_size(page_size: Option<i64>) -> Result<i64, AppError> {
     let page_size = page_size.unwrap_or(DEFAULT_PAGE_SIZE);
     if !(1..=MAX_PAGE_SIZE).contains(&page_size) {
@@ -61,15 +85,6 @@ pub fn validate_page_size(page_size: Option<i64>) -> Result<i64, AppError> {
         )));
     }
     Ok(page_size)
-}
-
-pub fn validate_non_negative(name: &str, value: Option<i64>) -> Result<(), AppError> {
-    if let Some(value) = value
-        && value < 0
-    {
-        return Err(AppError::Validation(format!("{name} must be non-negative")));
-    }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -103,5 +118,29 @@ mod tests {
     fn rejects_large_page_size() {
         let err = validate_page_size(Some(MAX_PAGE_SIZE + 1)).expect_err("too large");
         assert!(err.to_string().contains("page_size"));
+    }
+
+    #[test]
+    fn inclusive_order_allows_equal_bounds() {
+        validate_time_order_inclusive("from", "2026-01-01T00:00:00Z", "to", "2026-01-01T00:00:00Z")
+            .expect("equal inclusive bounds are valid");
+    }
+
+    #[test]
+    fn inclusive_order_rejects_reversed_bounds() {
+        let err = validate_time_order_inclusive(
+            "from",
+            "2026-01-02T00:00:00Z",
+            "to",
+            "2026-01-01T00:00:00Z",
+        )
+        .expect_err("reversed bounds");
+        assert!(err.to_string().contains("after"));
+    }
+
+    #[test]
+    fn rejects_non_positive_id() {
+        let err = validate_positive_id("id", 0).expect_err("zero id");
+        assert!(err.to_string().contains("positive"));
     }
 }
