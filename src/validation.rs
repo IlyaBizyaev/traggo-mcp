@@ -12,22 +12,51 @@ pub fn validate_required_string(name: &str, value: &str) -> Result<(), AppError>
     Ok(())
 }
 
-pub fn validate_optional_required_string(
-    name: &str,
-    value: Option<&String>,
-) -> Result<(), AppError> {
-    if let Some(value) = value {
-        validate_required_string(name, value)?;
-    }
-    Ok(())
-}
-
 pub fn validate_rfc3339(name: &str, value: &str) -> Result<DateTime<FixedOffset>, AppError> {
     DateTime::parse_from_rfc3339(value).map_err(|_| {
         AppError::Validation(format!(
             "{name} must be an RFC3339 timestamp, got {value:?}"
         ))
     })
+}
+
+/// Reinterprets an RFC3339 timestamp's wall-clock time as UTC, discarding the
+/// original offset.
+///
+/// Traggo stores and matches time spans by their offset-stripped wall-clock
+/// time. The `stats` resolver additionally compares each range's UTC instant
+/// against the offset-stripped value when reassembling results, so any range
+/// carrying a non-zero offset is silently dropped and returns no entries. By
+/// keeping the wall-clock components and forcing a `Z` offset we make both
+/// comparisons agree while preserving the time the caller intended.
+pub fn to_floating_utc(name: &str, value: &str) -> Result<String, AppError> {
+    let parsed = validate_rfc3339(name, value)?;
+    Ok(parsed
+        .naive_local()
+        .format("%Y-%m-%dT%H:%M:%SZ")
+        .to_string())
+}
+
+/// Validates a Traggo tag key.
+///
+/// Traggo rejects empty keys and keys containing spaces, and normalizes the
+/// remainder to lowercase. Validating here yields a clear, actionable error
+/// before the request reaches the GraphQL endpoint.
+pub fn validate_tag_key(name: &str, value: &str) -> Result<(), AppError> {
+    validate_required_string(name, value)?;
+    if value.contains(' ') {
+        return Err(AppError::Validation(format!(
+            "{name} must not contain spaces; use lowercase slug/kebab-case such as \"ai-setup\""
+        )));
+    }
+    Ok(())
+}
+
+pub fn validate_optional_tag_key(name: &str, value: Option<&String>) -> Result<(), AppError> {
+    if let Some(value) = value {
+        validate_tag_key(name, value)?;
+    }
+    Ok(())
 }
 
 pub fn validate_optional_rfc3339(name: &str, value: Option<&String>) -> Result<(), AppError> {
@@ -142,5 +171,28 @@ mod tests {
     fn rejects_non_positive_id() {
         let err = validate_positive_id("id", 0).expect_err("zero id");
         assert!(err.to_string().contains("positive"));
+    }
+
+    #[test]
+    fn floating_utc_strips_offset_and_keeps_wall_clock() {
+        assert_eq!(
+            to_floating_utc("start", "2026-06-27T22:12:20+02:00").expect("valid"),
+            "2026-06-27T22:12:20Z"
+        );
+        assert_eq!(
+            to_floating_utc("start", "2026-06-27T22:12:20Z").expect("valid"),
+            "2026-06-27T22:12:20Z"
+        );
+    }
+
+    #[test]
+    fn rejects_tag_key_with_spaces() {
+        let err = validate_tag_key("key", "AI setup").expect_err("spaces");
+        assert!(err.to_string().contains("spaces"));
+    }
+
+    #[test]
+    fn accepts_kebab_case_tag_key() {
+        validate_tag_key("key", "bed-phone").expect("valid key");
     }
 }

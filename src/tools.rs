@@ -12,9 +12,9 @@ use crate::{
     graphql,
     traggo_client::TraggoClient,
     validation::{
-        validate_optional_required_string, validate_optional_rfc3339, validate_page_size,
-        validate_positive_id, validate_required_string, validate_rfc3339, validate_time_order,
-        validate_time_order_inclusive,
+        to_floating_utc, validate_optional_rfc3339, validate_optional_tag_key, validate_page_size,
+        validate_positive_id, validate_required_string, validate_rfc3339, validate_tag_key,
+        validate_time_order, validate_time_order_inclusive,
     },
 };
 
@@ -61,6 +61,9 @@ pub struct UpdateTimeSpanInput {
     pub end: Option<String>,
     /// Replaces the time span's tags entirely; omit only to clear all tags.
     pub tags: Option<Vec<TagInput>>,
+    /// Optional and informational only: Traggo identifies the span by `id` and
+    /// ignores this for the update itself. Leave it null; the response echoes the
+    /// span's previous start here, but stored/listed spans always report null.
     pub old_start: Option<String>,
     /// Replaces the time span's note entirely; pass the existing note to keep it.
     pub note: String,
@@ -196,7 +199,10 @@ pub struct TraggoTools {
     tool_router: ToolRouter<Self>,
 }
 
-#[tool_handler(router = self.tool_router, instructions = "Purpose-built Traggo time tracking tools backed by Traggo GraphQL.")]
+#[tool_handler(
+    router = self.tool_router,
+    instructions = "Tag-based time tracking tools backed by Traggo."
+)]
 impl ServerHandler for TraggoTools {}
 
 #[tool_router(router = tool_router)]
@@ -210,7 +216,9 @@ impl TraggoTools {
 
     #[tool(
         name = "list_time_spans",
-        description = "List Traggo time spans with optional RFC3339 range filters and bounded pagination. Pass `next_cursor` from a prior response back as `cursor` to page forward."
+        description = "List finished Traggo time spans with optional RFC3339 range filters \
+            and bounded pagination. Range filters match by wall-clock time and ignore the \
+            offset. Pass `next_cursor` from a prior response back as `cursor` to page forward."
     )]
     pub async fn list_time_spans(
         &self,
@@ -265,7 +273,11 @@ impl TraggoTools {
 
     #[tool(
         name = "create_time_span",
-        description = "Create a Traggo time span. Omitting end starts an active timer."
+        description = "Create a Traggo time span. Pass `end: null` or omit it to start an \
+            active (open) timer. Tags are {key, value} pairs and both parts are required: an \
+            empty value is rejected. Traggo has no value-less labels, so to use a tag key as a \
+            plain activity marker make the value a subtype or, if none, `default`, e.g. \
+            sleep=nap or sleep=default."
     )]
     pub async fn create_time_span(
         &self,
@@ -297,7 +309,9 @@ impl TraggoTools {
 
     #[tool(
         name = "update_time_span",
-        description = "Update an existing Traggo time span by id. This replaces the whole record: the provided note and tags overwrite the existing ones, so resend current values you want to keep."
+        description = "Update an existing Traggo time span by id. This replaces the whole \
+            record: the provided note and tags overwrite the existing ones, so resend current \
+            values you want to keep."
     )]
     pub async fn update_time_span(
         &self,
@@ -398,12 +412,18 @@ impl TraggoTools {
             .map_err(tool_error)
     }
 
-    #[tool(name = "create_tag", description = "Create a Traggo tag definition.")]
+    #[tool(
+        name = "create_tag",
+        description = "Create a Traggo tag key definition. Keys are normalized to lowercase \
+            and may not contain spaces; use slug/kebab-case such as `morning-run` or `ai-setup`. \
+            This defines a tag key only, not a key/value pair or a predefined value; time spans \
+            still attach tags as {key, value} pairs."
+    )]
     pub async fn create_tag(
         &self,
         Parameters(input): Parameters<CreateTagInput>,
     ) -> Result<Json<TagMutationOutput>, String> {
-        validate_required_string("key", &input.key).map_err(tool_error)?;
+        validate_tag_key("key", &input.key).map_err(tool_error)?;
         validate_required_string("color", &input.color).map_err(tool_error)?;
         let variables = graphql::create_tag::Variables {
             key: input.key,
@@ -422,14 +442,16 @@ impl TraggoTools {
 
     #[tool(
         name = "update_tag",
-        description = "Update a Traggo tag key and/or color."
+        description = "Update a Traggo tag key and/or color. `new_key` is normalized to \
+            lowercase and may not contain spaces, so a rename that only changes case is a no-op \
+            (e.g. `sleep` -> `Sleep` stays `sleep`); verify with `list_tags`."
     )]
     pub async fn update_tag(
         &self,
         Parameters(input): Parameters<UpdateTagInput>,
     ) -> Result<Json<TagMutationOutput>, String> {
-        validate_required_string("key", &input.key).map_err(tool_error)?;
-        validate_optional_required_string("new_key", input.new_key.as_ref()).map_err(tool_error)?;
+        validate_tag_key("key", &input.key).map_err(tool_error)?;
+        validate_optional_tag_key("new_key", input.new_key.as_ref()).map_err(tool_error)?;
         validate_required_string("color", &input.color).map_err(tool_error)?;
         let variables = graphql::update_tag::Variables {
             key: input.key,
@@ -494,7 +516,13 @@ impl TraggoTools {
 
     #[tool(
         name = "get_stats",
-        description = "Get Traggo tracked seconds grouped by tag keys for explicit RFC3339 ranges."
+        description = "Get Traggo tracked seconds grouped by tag key/value for explicit \
+            RFC3339 ranges. `tags` is required and must list at least one tag key to group by; \
+            only spans carrying those keys are counted. `require_tags`/`exclude_tags` filter \
+            spans by exact {key, value} pairs. Active timers (open spans without an end) are \
+            never counted. Ranges are matched by wall-clock time: the offset is ignored, so use \
+            the same local time you used when recording the spans (e.g. both in +02:00). \
+            Returned range start/end echo that wall clock as UTC."
     )]
     pub async fn get_stats(
         &self,
@@ -521,17 +549,21 @@ impl TraggoTools {
         validate_tags(input.exclude_tags.as_deref()).map_err(tool_error)?;
         validate_tags(input.require_tags.as_deref()).map_err(tool_error)?;
 
+        let ranges = input
+            .ranges
+            .into_iter()
+            .enumerate()
+            .map(|(index, range)| {
+                Ok(graphql::stats::Range {
+                    start: to_floating_utc(&format!("ranges[{index}].start"), &range.start)?,
+                    end: to_floating_utc(&format!("ranges[{index}].end"), &range.end)?,
+                })
+            })
+            .collect::<Result<Vec<_>, AppError>>()
+            .map_err(tool_error)?;
+
         let variables = graphql::stats::Variables {
-            ranges: Some(
-                input
-                    .ranges
-                    .into_iter()
-                    .map(|range| graphql::stats::Range {
-                        start: range.start,
-                        end: range.end,
-                    })
-                    .collect(),
-            ),
+            ranges: Some(ranges),
             tags: Some(input.tags),
             exclude_tags: input.exclude_tags.map(stats_tags),
             require_tags: input.require_tags.map(stats_tags),
@@ -548,7 +580,13 @@ fn list_time_spans_output(
     data: graphql::time_spans::ResponseData,
 ) -> Result<Json<ListTimeSpansOutput>, String> {
     let cursor = data.time_spans.cursor;
-    let next_cursor = if cursor.has_more {
+    let returned = data.time_spans.time_spans.len();
+    let page_size = usize::try_from(cursor.page_size).unwrap_or(usize::MAX);
+    // Traggo reports `has_more` whenever a non-empty page lands on a page-size
+    // boundary, so it stays true even when the final page is partial. A page
+    // smaller than the requested size cannot have a successor, so suppress the
+    // cursor in that case to avoid handing out a token that yields an empty page.
+    let next_cursor = if cursor.has_more && returned >= page_size {
         Some(
             PageCursor {
                 offset: cursor.offset,
