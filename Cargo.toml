@@ -22,3 +22,8 @@ tokio = { version = "1.52.3", features = ["macros", "rt-multi-thread"] }
 reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls"] }
 graphql_client = "0.16.0"
 rmcp = { version = "1.8.0", features = ["server", "transport-io", "schemars"] }
+
+[profile.release]
+strip = true
+lto = "thin"
+codegen-units = 1
