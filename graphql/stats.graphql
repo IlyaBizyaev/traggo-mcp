@@ -1,0 +1,11 @@
+query Stats($ranges: [Range!], $tags: [String!], $excludeTags: [InputTimeSpanTag!], $requireTags: [InputTimeSpanTag!]) {
+  stats(ranges: $ranges, tags: $tags, excludeTags: $excludeTags, requireTags: $requireTags) {
+    start
+    end
+    entries {
+      key
+      value
+      timeSpendInSeconds
+    }
+  }
+}

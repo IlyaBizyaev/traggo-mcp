@@ -1,0 +1,21 @@
+query TimeSpans($fromInclusive: Time, $toInclusive: Time, $cursor: InputCursor) {
+  timeSpans(fromInclusive: $fromInclusive, toInclusive: $toInclusive, cursor: $cursor) {
+    timeSpans {
+      id
+      start
+      end
+      oldStart
+      note
+      tags {
+        key
+        value
+      }
+    }
+    cursor {
+      hasMore
+      offset
+      startId
+      pageSize
+    }
+  }
+}

@@ -1,0 +1,13 @@
+mutation StopTimer($id: Int!, $end: Time!) {
+  stopTimeSpan(id: $id, end: $end) {
+    id
+    start
+    end
+    oldStart
+    note
+    tags {
+      key
+      value
+    }
+  }
+}

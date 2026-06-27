@@ -1,0 +1,24 @@
+[package]
+name = "traggo-mcp"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-only"
+description = "Standalone MCP server for Traggo time tracking"
+repository = "https://github.com/IlyaBizyaev/traggo-mcp"
+
+[dependencies]
+anyhow = "1.0.103"
+thiserror = "2.0.18"
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+
+chrono = { version = "0.4.45", default-features = false, features = ["std"] }
+
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.150"
+schemars = { version = "1.2.1", features = ["derive"] }
+
+tokio = { version = "1.52.3", features = ["macros", "rt-multi-thread"] }
+reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls"] }
+graphql_client = "0.16.0"
+rmcp = { version = "1.8.0", features = ["server", "transport-io", "schemars"] }

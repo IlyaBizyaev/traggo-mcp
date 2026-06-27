@@ -1,0 +1,13 @@
+mutation UpdateTimeSpan($id: Int!, $start: Time!, $end: Time, $tags: [InputTimeSpanTag!], $oldStart: Time, $note: String!) {
+  updateTimeSpan(id: $id, start: $start, end: $end, tags: $tags, oldStart: $oldStart, note: $note) {
+    id
+    start
+    end
+    oldStart
+    note
+    tags {
+      key
+      value
+    }
+  }
+}

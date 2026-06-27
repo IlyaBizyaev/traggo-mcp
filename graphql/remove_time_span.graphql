@@ -1,0 +1,13 @@
+mutation RemoveTimeSpan($id: Int!) {
+  removeTimeSpan(id: $id) {
+    id
+    start
+    end
+    oldStart
+    note
+    tags {
+      key
+      value
+    }
+  }
+}

@@ -1,0 +1,7 @@
+mutation RemoveTag($key: String!) {
+  removeTag(key: $key) {
+    key
+    color
+    usages
+  }
+}

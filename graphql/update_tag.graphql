@@ -1,0 +1,7 @@
+mutation UpdateTag($key: String!, $newKey: String, $color: String!) {
+  updateTag(key: $key, newKey: $newKey, color: $color) {
+    key
+    color
+    usages
+  }
+}
