@@ -1,6 +1,6 @@
 # Traggo MCP
 
-An MCP server for Traggo, a tag-based time tracking tool.
+An MCP server for [Traggo](https://traggo.net), a tag-based time tracking tool.
 
 `traggo-mcp` is a standalone stdio MCP server that exposes focused tools for time tracking workflows. It talks to Traggo through the GraphQL endpoint.
 
