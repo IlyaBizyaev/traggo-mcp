@@ -19,18 +19,21 @@ use crate::{
 };
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct TagInput {
     pub key: String,
     pub value: String,
 }
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct RangeInput {
     pub start: String,
     pub end: String,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ListTimeSpansInput {
     pub from_inclusive: Option<String>,
     pub to_inclusive: Option<String>,
@@ -41,6 +44,7 @@ pub struct ListTimeSpansInput {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct CreateTimeSpanInput {
     pub start: String,
     pub end: Option<String>,
@@ -50,6 +54,7 @@ pub struct CreateTimeSpanInput {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct UpdateTimeSpanInput {
     pub id: i64,
     pub start: String,
@@ -62,23 +67,27 @@ pub struct UpdateTimeSpanInput {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct StopTimerInput {
     pub id: i64,
     pub end: String,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct RemoveTimeSpanInput {
     pub id: i64,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct CreateTagInput {
     pub key: String,
     pub color: String,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct UpdateTagInput {
     pub key: String,
     pub new_key: Option<String>,
@@ -86,17 +95,20 @@ pub struct UpdateTagInput {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct RemoveTagInput {
     pub key: String,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct SuggestTagValuesInput {
     pub key: String,
     pub query: String,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct StatsInput {
     pub ranges: Vec<RangeInput>,
     pub tags: Vec<String>,
@@ -725,4 +737,33 @@ fn stats_tags(tags: Vec<TagInput>) -> Vec<graphql::stats::InputTimeSpanTag> {
 
 fn tool_error(error: impl std::fmt::Display) -> String {
     error.to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::Value;
+
+    use super::{CreateTimeSpanInput, TagInput};
+
+    #[test]
+    fn create_time_span_schema_disallows_additional_properties() {
+        let schema = schemars::schema_for!(CreateTimeSpanInput);
+        let value = serde_json::to_value(schema).expect("schema should serialize");
+
+        assert_eq!(
+            value.pointer("/additionalProperties"),
+            Some(&Value::Bool(false))
+        );
+    }
+
+    #[test]
+    fn nested_tag_schema_disallows_additional_properties() {
+        let schema = schemars::schema_for!(TagInput);
+        let value = serde_json::to_value(schema).expect("schema should serialize");
+
+        assert_eq!(
+            value.pointer("/additionalProperties"),
+            Some(&Value::Bool(false))
+        );
+    }
 }
