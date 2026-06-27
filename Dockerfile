@@ -12,7 +12,10 @@ RUN cargo build --release --locked
 
 FROM alpine:3.24
 
-RUN apk add --no-cache ca-certificates
+RUN apk add --no-cache ca-certificates \
+    && adduser -D -H -u 10001 traggo
 COPY --from=builder /app/target/release/traggo-mcp /usr/local/bin/traggo-mcp
+
+USER traggo
 
 ENTRYPOINT ["traggo-mcp"]
