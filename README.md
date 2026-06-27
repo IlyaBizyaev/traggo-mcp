@@ -65,7 +65,7 @@ The `-i` flag is required so the stdio MCP server can read from stdin.
         "TRAGGO_URL=https://traggo.example.com/graphql",
         "-e",
         "TRAGGO_TOKEN=...",
-        "ghcr.io/IlyaBizyaev/traggo-mcp:latest"
+        "ghcr.io/ilyabizyaev/traggo-mcp:main"
       ]
     }
   }
